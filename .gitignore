@@ -1,3 +1,6 @@
-venv
+venv/
 .env
-.env
+.DS_Store
+__pycache__/
+*.py[cod]
+.langgraph_api/

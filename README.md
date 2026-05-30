@@ -174,4 +174,4 @@ cd Sentinel-AI- && source venv/bin/activate && pytest test/ -v
 
 ---
 
-*Built for [Hackathon name] · Powered by Azure AI Foundry, LangGraph & LangChain.*
+*Built for Microsfot Hackathon· Powered by Azure AI Foundry, LangGraph & LangChain.*

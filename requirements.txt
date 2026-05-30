@@ -1,11 +1,12 @@
-numpy
-pandas
 python-dotenv
 openai
-azure-identity
 langchain-core
 langchain-openai
 langgraph
-# langgraph-cli[inmem]==0.1.72
 tavily-python
-langchain-openai
+fastapi
+uvicorn
+bcrypt
+httpx
+email-validator
+pydantic[email]

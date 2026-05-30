@@ -11,7 +11,7 @@ from tavily import TavilyClient
 
 
 @tool
-def web_search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
+def web_search(query: str, max_results: int = 8) -> list[dict[str, Any]]:
     """Search the web for similar products, competitors, and market patterns."""
 
     load_dotenv()

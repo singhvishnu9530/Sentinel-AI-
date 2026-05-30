@@ -165,7 +165,6 @@ cd Sentinel-AI- && source venv/bin/activate && pytest test/ -v
 
 ## 👥 Team
 
-> _Replace with your team's real names, emails, and roles before submission._
 
 | Name | Role | Responsibilities |
 |---|---|---|

@@ -9,7 +9,8 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from src.prompts.chat_agent import ANALYZE_TOOL, CHAT_SYSTEM_PROMPT
+from src.prompts.chat_agent import ANALYZE_TOOL, CHAT_SYSTEM_PROMPT, WEB_SEARCH_TOOL
+from src.tools.web_search import web_search
 
 load_dotenv()
 
@@ -26,6 +27,18 @@ def _model() -> str:
     return os.getenv("OPENAI_MODEL", "o4-mini")
 
 LANGGRAPH_URL = os.getenv("LANGGRAPH_URL", "http://localhost:2024")
+
+# Pricing per 1M tokens (USD). Override in .env with your real Azure rates.
+PRICE_INPUT_PER_1M = float(os.getenv("LLM_PRICE_INPUT_PER_1M", "1.25"))
+PRICE_OUTPUT_PER_1M = float(os.getenv("LLM_PRICE_OUTPUT_PER_1M", "10.0"))
+
+
+def _usd(prompt_tokens: int, completion_tokens: int) -> float:
+    return round(
+        prompt_tokens / 1_000_000 * PRICE_INPUT_PER_1M
+        + completion_tokens / 1_000_000 * PRICE_OUTPUT_PER_1M,
+        6,
+    )
 
 # Map internal node names to neutral, user-facing phase messages.
 # Deliberately does NOT reveal the agent architecture.
@@ -96,62 +109,120 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage]
 
 
+async def _stream_one_turn(client, messages, tool_calls, usage_acc):
+    """One Azure streaming turn. Forwards content chunks; accumulates tool calls
+    into `tool_calls` (index -> {id, name, args}) and token usage into `usage_acc`.
+    Yields SSE lines to forward."""
+    async with client.stream(
+        "POST",
+        f"{_azure_endpoint()}/chat/completions",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_api_key()}",
+        },
+        content=json.dumps({
+            "model": _model(),
+            "messages": messages,
+            "tools": [ANALYZE_TOOL, WEB_SEARCH_TOOL],
+            "tool_choice": "auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }),
+    ) as response:
+        async for line in response.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            data = line[6:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+                usage = chunk.get("usage")
+                if usage:
+                    usage_acc["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                    usage_acc["completion_tokens"] += usage.get("completion_tokens", 0)
+                if not chunk.get("choices"):
+                    continue
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                if delta.get("tool_calls"):
+                    for tc in delta["tool_calls"]:
+                        idx = tc.get("index", 0)
+                        slot = tool_calls.setdefault(idx, {"id": "", "name": "", "args": ""})
+                        if tc.get("id"):
+                            slot["id"] = tc["id"]
+                        fn = tc.get("function", {})
+                        if fn.get("name"):
+                            slot["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            slot["args"] += fn["arguments"]
+                elif delta.get("content"):
+                    yield f"data: {json.dumps(chunk)}\n\n"
+            except Exception:
+                pass
+
+
 @router.post("/chat")
 async def chat(req: ChatRequest):
-    payload = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
     for msg in req.messages:
-        payload.append({"role": msg.role, "content": msg.content})
+        messages.append({"role": msg.role, "content": msg.content})
 
     async def generate():
-        tool_call_args = ""
-        is_tool_call = False
+        usage_acc = {"prompt_tokens": 0, "completion_tokens": 0}
+        async with httpx.AsyncClient(timeout=120) as client:
+            # Tool loop: web_search runs and continues; analyze_project is terminal.
+            for _ in range(5):
+                tool_calls: dict = {}
+                async for sse in _stream_one_turn(client, messages, tool_calls, usage_acc):
+                    yield sse
 
-        async with httpx.AsyncClient(timeout=60) as client:
-            async with client.stream(
-                "POST",
-                f"{_azure_endpoint()}/chat/completions",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {_api_key()}",
-                },
-                content=json.dumps({
-                    "model": _model(),
-                    "messages": payload,
-                    "tools": [ANALYZE_TOOL],
-                    "tool_choice": "auto",
-                    "stream": True,
-                }),
-            ) as response:
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:].strip()
-                    if data == "[DONE]":
-                        break
+                if not tool_calls:
+                    break  # plain text answer was streamed — done
+
+                # analyze_project is terminal — run the full pipeline
+                analyze = next((t for t in tool_calls.values() if t["name"] == "analyze_project"), None)
+                if analyze:
                     try:
-                        chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        requirement = json.loads(analyze["args"]).get("requirement", "")
+                        async for event in stream_langgraph(requirement):
+                            if event["type"] == "progress":
+                                yield f"data: {json.dumps({'type': 'progress', 'message': event['message']})}\n\n"
+                            elif event["type"] == "analysis":
+                                yield f"data: {json.dumps({'type': 'analysis', 'content': json.dumps(event['result'])})}\n\n"
+                    except Exception as e:
+                        yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                    break
 
-                        if delta.get("tool_calls"):
-                            is_tool_call = True
-                            for tc in delta["tool_calls"]:
-                                if tc.get("function", {}).get("arguments"):
-                                    tool_call_args += tc["function"]["arguments"]
-                        elif delta.get("content"):
-                            yield f"data: {json.dumps(chunk)}\n\n"
-                    except Exception:
-                        pass
+                # Otherwise: execute web_search calls, feed results back, loop
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": t["id"], "type": "function",
+                         "function": {"name": t["name"], "arguments": t["args"]}}
+                        for t in tool_calls.values()
+                    ],
+                })
+                for t in tool_calls.values():
+                    if t["name"] == "web_search":
+                        yield f"data: {json.dumps({'type': 'progress', 'message': 'Searching the web…'})}\n\n"
+                        try:
+                            query = json.loads(t["args"]).get("query", "")
+                            results = web_search.invoke({"query": query})
+                            content = json.dumps(results)[:6000]
+                        except Exception as e:
+                            content = json.dumps([{"error": str(e)}])
+                        messages.append({"role": "tool", "tool_call_id": t["id"], "content": content})
 
-        if is_tool_call:
-            try:
-                requirement = json.loads(tool_call_args).get("requirement", "")
-                async for event in stream_langgraph(requirement):
-                    if event["type"] == "progress":
-                        yield f"data: {json.dumps({'type': 'progress', 'message': event['message']})}\n\n"
-                    elif event["type"] == "analysis":
-                        yield f"data: {json.dumps({'type': 'analysis', 'content': json.dumps(event['result'])})}\n\n"
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+        # Emit token usage + estimated cost for this turn
+        cost_event = {
+            "type": "cost",
+            "prompt_tokens": usage_acc["prompt_tokens"],
+            "completion_tokens": usage_acc["completion_tokens"],
+            "total_tokens": usage_acc["prompt_tokens"] + usage_acc["completion_tokens"],
+            "usd": _usd(usage_acc["prompt_tokens"], usage_acc["completion_tokens"]),
+        }
+        yield f"data: {json.dumps(cost_event)}\n\n"
 
         yield "data: [DONE]\n\n"
 

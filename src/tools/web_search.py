@@ -14,6 +14,8 @@ from tavily import TavilyClient
 def web_search(query: str, max_results: int = 8) -> list[dict[str, Any]]:
     """Search the web for similar products, competitors, and market patterns."""
 
+    print(f"\n🔍 [WEB_SEARCH CALLED] query={query!r}\n", flush=True)
+
     load_dotenv()
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
@@ -29,6 +31,8 @@ def web_search(query: str, max_results: int = 8) -> list[dict[str, Any]]:
     )
 
     results = response.get("results", [])
+    print(f"✅ [WEB_SEARCH RETURNED] {len(results)} results for {query!r}\n", flush=True)
+
     return [
         {
             "title": result.get("title", ""),

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import os
+from langchain_core.utils.uuid import uuid7
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel
+from langchain.agents import create_agent
+# Corrected Imports: Exact path resolution for LangChain Middleware
+from langchain.agents.middleware.model_retry import ModelRetryMiddleware
+from langchain.agents.middleware.tool_retry import ToolRetryMiddleware
+# Required for tracking internal error states during iteration self-correction
+from langgraph.checkpoint.memory import InMemorySaver
 
 from src.prompts.complexity_risk import COMPLEXITY_RISK_PROMPT
 from src.tools.web_search import web_search
@@ -40,16 +46,32 @@ class ComplexityRiskAgent:
             api_key=api_key,
             base_url=os.getenv("azure_endpoint") or None,
         )
-        self._structured_llm = self._llm.with_structured_output(ComplexityRiskReport)
-        self._agent = create_react_agent(
+
+        # Added: An ephemeral in-memory saver to persist the state during retry loops
+        self._checkpointer = InMemorySaver()
+
+        self._agent = create_agent(
             model=self._llm,
             tools=[web_search],
-            prompt=SystemMessage(content=COMPLEXITY_RISK_PROMPT),
+            system_prompt=COMPLEXITY_RISK_PROMPT,
+            response_format=ComplexityRiskReport,
+            checkpointer=self._checkpointer,
+            middleware=[
+                ModelRetryMiddleware(max_retries=3),
+                ToolRetryMiddleware(max_retries=2)
+            ]
         )
 
     def run(self, requirement: str) -> ComplexityRiskReport:
+        # Generate a unique thread ID so this specific run has isolated memory
+        thread_id = str(uuid7())
+
         result = self._agent.invoke(
             {"messages": [HumanMessage(content=f"Client requirement:\n{requirement}")]},
-            config={"recursion_limit": 10},
+            config={
+                "recursion_limit": 10,
+                "configurable": {"thread_id": thread_id}  # Binds memory state to the thread
+            }
         )
-        return self._structured_llm.invoke(result["messages"])
+
+        return result["structured_response"]

@@ -1,5 +1,10 @@
 """LangGraph workflow — 5 parallel analysis agents → 1 build blueprint synthesis."""
 
+# load_dotenv MUST run before any LangChain import so LANGCHAIN_TRACING_V2
+# is in the environment when the LangSmith tracing client initialises.
+from dotenv import load_dotenv
+load_dotenv()
+
 from langgraph.graph import END, START, StateGraph
 
 from src.agents.build_blueprint import BuildBlueprintAgent

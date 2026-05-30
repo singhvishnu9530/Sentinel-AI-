@@ -169,7 +169,7 @@ cd Sentinel-AI- && source venv/bin/activate && pytest test/ -v
 
 | Name | Role | Responsibilities |
 |---|---|---|
-| Vishnu Singh | Full-stack / AI Engineer | Agent design, LangGraph workflow, backend & frontend |
+| Vishnu Singh | Senior Machine Learning Engineer | Agent design, LangGraph workflow, backend & frontend |
 | Pradumn Patidar | Senior Data Scientist | AI agent design, prompt engineering, model & evaluation |
 
 ---

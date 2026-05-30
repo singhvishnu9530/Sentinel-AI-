@@ -10,3 +10,10 @@ bcrypt
 httpx
 email-validator
 pydantic[email]
+langgraph-checkpoint-sqlite
+langchain
+pypdf
+python-docx
+python-multipart
+pytest
+pytest-asyncio

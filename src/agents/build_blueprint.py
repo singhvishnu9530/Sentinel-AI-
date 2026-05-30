@@ -13,7 +13,8 @@ from pydantic import BaseModel
 from langchain.agents import create_agent
 from langchain.agents.middleware.model_retry import ModelRetryMiddleware
 from langchain.agents.middleware.tool_retry import ToolRetryMiddleware
-from langgraph.checkpoint.memory import InMemorySaver
+import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from src.prompts.build_blueprint import BUILD_BLUEPRINT_PROMPT
 from src.tools.web_search import web_search
@@ -97,7 +98,9 @@ class BuildBlueprintAgent:
             api_key=api_key,
             base_url=os.getenv("azure_endpoint") or None,
         )
-        self._checkpointer = InMemorySaver()
+        os.makedirs("data", exist_ok=True)
+        conn = sqlite3.connect("data/agent_checkpoints.db", check_same_thread=False)
+        self._checkpointer = SqliteSaver(conn)
         self._agent = create_agent(
             model=self._llm,
             tools=[web_search],

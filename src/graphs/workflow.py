@@ -5,7 +5,9 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import sqlite3
 from langgraph.graph import END, START, StateGraph
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from src.agents.build_blueprint import BuildBlueprintAgent
 from src.agents.complexity_risk import ComplexityRiskAgent
@@ -90,7 +92,11 @@ def build_workflow_graph():
 
     workflow.add_edge("build_blueprint", END)
 
-    return workflow.compile()
+    import os
+    os.makedirs("data", exist_ok=True)
+    conn = sqlite3.connect("data/checkpoints.db", check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
+    return workflow.compile(checkpointer=checkpointer)
 
 
 graph = build_workflow_graph()

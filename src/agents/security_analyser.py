@@ -13,8 +13,8 @@ from langchain.agents import create_agent
 # Corrected Imports: Exact path resolution for LangChain Middleware
 from langchain.agents.middleware.model_retry import ModelRetryMiddleware
 from langchain.agents.middleware.tool_retry import ToolRetryMiddleware
-# Required for tracking internal error states during iteration self-correction
-from langgraph.checkpoint.memory import InMemorySaver
+import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from src.prompts.security_analyser import SECURITY_ANALYSER_PROMPT
 from src.tools.web_search import web_search
@@ -45,7 +45,9 @@ class SecurityAnalyserAgent:
         )
 
         # Added: An ephemeral in-memory saver to persist the state during retry loops
-        self._checkpointer = InMemorySaver()
+        os.makedirs("data", exist_ok=True)
+        conn = sqlite3.connect("data/agent_checkpoints.db", check_same_thread=False)
+        self._checkpointer = SqliteSaver(conn)
 
         self._agent = create_agent(
             model=self._llm,

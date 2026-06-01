@@ -1,4 +1,4 @@
-"""Auth endpoints — signup and login."""
+"""Auth + usage/upgrade endpoints."""
 
 import sqlite3
 
@@ -6,7 +6,7 @@ import bcrypt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 
-from src.utils.database import get_db, now_iso
+from src.utils.database import get_db, now_iso, get_usage, upgrade_to_pro
 
 router = APIRouter(prefix="/auth")
 
@@ -22,10 +22,27 @@ class LoginRequest(BaseModel):
     password: str
 
 
+def _validate_password(pw: str) -> str | None:
+    """Return an error message if the password is too weak, else None."""
+    import re
+    if len(pw) < 8:
+        return "Password must be at least 8 characters"
+    if not re.search(r"[A-Z]", pw):
+        return "Password must contain an uppercase letter"
+    if not re.search(r"[a-z]", pw):
+        return "Password must contain a lowercase letter"
+    if not re.search(r"[0-9]", pw):
+        return "Password must contain a number"
+    if not re.search(r"[^A-Za-z0-9]", pw):
+        return "Password must contain a special character"
+    return None
+
+
 @router.post("/signup")
 def signup(req: SignupRequest):
-    if len(req.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    pw_error = _validate_password(req.password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
 
     hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
     try:
@@ -38,7 +55,7 @@ def signup(req: SignupRequest):
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    return {"user": {"id": user_id, "name": req.name, "email": req.email}}
+    return {"user": get_usage(user_id)}
 
 
 @router.post("/login")
@@ -49,4 +66,20 @@ def login(req: LoginRequest):
     if not row or not bcrypt.checkpw(req.password.encode(), row["password_hash"].encode()):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    return {"user": {"id": row["id"], "name": row["name"], "email": row["email"]}}
+    return {"user": get_usage(row["id"])}
+
+
+@router.get("/usage/{user_id}")
+def usage(user_id: int):
+    info = get_usage(user_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user": info}
+
+
+@router.post("/upgrade/{user_id}")
+def upgrade(user_id: int):
+    info = upgrade_to_pro(user_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user": info}

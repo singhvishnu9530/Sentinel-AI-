@@ -13,9 +13,9 @@ from langchain.agents import create_agent
 # Corrected Imports: Exact path resolution for LangChain Middleware
 from langchain.agents.middleware.model_retry import ModelRetryMiddleware
 from langchain.agents.middleware.tool_retry import ToolRetryMiddleware
-import sqlite3
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import InMemorySaver
 
+from src.agents._usage import sum_tokens
 from src.prompts.complexity_risk import COMPLEXITY_RISK_PROMPT
 from src.tools.web_search import web_search
 
@@ -48,9 +48,7 @@ class ComplexityRiskAgent:
         )
 
         # Added: An ephemeral in-memory saver to persist the state during retry loops
-        os.makedirs("data", exist_ok=True)
-        conn = sqlite3.connect("data/agent_checkpoints.db", check_same_thread=False)
-        self._checkpointer = SqliteSaver(conn)
+        self._checkpointer = InMemorySaver()
 
         self._agent = create_agent(
             model=self._llm,
@@ -67,13 +65,17 @@ class ComplexityRiskAgent:
     def run(self, requirement: str) -> ComplexityRiskReport:
         # Generate a unique thread ID so this specific run has isolated memory
         thread_id = str(uuid7())
-
-        result = self._agent.invoke(
-            {"messages": [HumanMessage(content=f"Client requirement:\n{requirement}")]},
-            config={
-                "recursion_limit": 10,
-                "configurable": {"thread_id": thread_id}  # Binds memory state to the thread
-            }
-        )
-
-        return result["structured_response"]
+        self.last_tokens = 0
+        try:
+            result = self._agent.invoke(
+                {"messages": [HumanMessage(content=f"Client requirement:\n{requirement}")]},
+                config={
+                    "recursion_limit": 10,
+                    "configurable": {"thread_id": thread_id}  # Binds memory state to the thread
+                }
+            )
+            self.last_tokens = sum_tokens(result)
+            return result["structured_response"]
+        except Exception as exc:
+            print(f"❌ [ComplexityRiskAgent] failed: {exc}", flush=True)
+            raise

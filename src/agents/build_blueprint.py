@@ -13,9 +13,9 @@ from pydantic import BaseModel
 from langchain.agents import create_agent
 from langchain.agents.middleware.model_retry import ModelRetryMiddleware
 from langchain.agents.middleware.tool_retry import ToolRetryMiddleware
-import sqlite3
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import InMemorySaver
 
+from src.agents._usage import sum_tokens
 from src.prompts.build_blueprint import BUILD_BLUEPRINT_PROMPT
 from src.tools.web_search import web_search
 
@@ -98,9 +98,7 @@ class BuildBlueprintAgent:
             api_key=api_key,
             base_url=os.getenv("azure_endpoint") or None,
         )
-        os.makedirs("data", exist_ok=True)
-        conn = sqlite3.connect("data/agent_checkpoints.db", check_same_thread=False)
-        self._checkpointer = SqliteSaver(conn)
+        self._checkpointer = InMemorySaver()
         self._agent = create_agent(
             model=self._llm,
             tools=[web_search],
@@ -116,11 +114,17 @@ class BuildBlueprintAgent:
     def run(self, all_reports: dict) -> BuildBlueprint:
         thread_id = str(uuid7())
         reports_text = json.dumps(all_reports)
-        result = self._agent.invoke(
-            {"messages": [HumanMessage(content=f"Specialist agent reports:\n{reports_text}")]},
-            config={
-                "recursion_limit": 15,
-                "configurable": {"thread_id": thread_id},
-            },
-        )
-        return result["structured_response"]
+        self.last_tokens = 0
+        try:
+            result = self._agent.invoke(
+                {"messages": [HumanMessage(content=f"Specialist agent reports:\n{reports_text}")]},
+                config={
+                    "recursion_limit": 15,
+                    "configurable": {"thread_id": thread_id},
+                },
+            )
+            self.last_tokens = sum_tokens(result)
+            return result["structured_response"]
+        except Exception as exc:
+            print(f"❌ [BuildBlueprintAgent] failed: {exc}", flush=True)
+            raise

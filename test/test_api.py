@@ -55,7 +55,7 @@ def test_signup_success(client):
         json={
             "name": "Test User",
             "email": "test@example.com",
-            "password": "password123"
+            "password": "Password123!"
         }
     )
     assert response.status_code == status.HTTP_200_OK
@@ -77,7 +77,7 @@ def test_signup_password_too_short(client):
         }
     )
     assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert response.json()["detail"] == "Password must be at least 6 characters"
+    assert response.json()["detail"] == "Password must be at least 8 characters"
 
 
 def test_signup_duplicate_email(client):
@@ -85,7 +85,7 @@ def test_signup_duplicate_email(client):
     signup_data = {
         "name": "Test User",
         "email": "duplicate@example.com",
-        "password": "password123"
+        "password": "Password123!"
     }
     # First signup
     res1 = client.post("/auth/signup", json=signup_data)
@@ -105,7 +105,7 @@ def test_login_success(client):
         json={
             "name": "Login User",
             "email": "login@example.com",
-            "password": "secretpassword"
+            "password": "Secretpass1!"
         }
     )
 
@@ -114,7 +114,7 @@ def test_login_success(client):
         "/auth/login",
         json={
             "email": "login@example.com",
-            "password": "secretpassword"
+            "password": "Secretpass1!"
         }
     )
     assert response.status_code == status.HTTP_200_OK
@@ -132,7 +132,7 @@ def test_login_invalid_password(client):
         json={
             "name": "Login User",
             "email": "login@example.com",
-            "password": "secretpassword"
+            "password": "Secretpass1!"
         }
     )
 

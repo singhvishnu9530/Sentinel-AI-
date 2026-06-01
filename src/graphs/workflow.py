@@ -5,9 +5,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import sqlite3
 from langgraph.graph import END, START, StateGraph
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 from src.agents.build_blueprint import BuildBlueprintAgent
 from src.agents.complexity_risk import ComplexityRiskAgent
@@ -36,20 +34,33 @@ PARALLEL_NODES = [
 ]
 
 
+def _run_agent(report_key: str, agent, state: RequirementAutopsyState) -> RequirementAutopsyState:
+    """Run one analysis agent safely. A failure here must NOT kill the other
+    agents or the synthesis — record the error and return an empty report."""
+    requirement = state.get("client_requirement", "").strip()
+    if not requirement:
+        return {report_key: {}, "errors": [f"{report_key}: no client_requirement provided"]}
+    try:
+        report = agent.run(requirement).model_dump()
+        return {report_key: report, "agent_tokens": getattr(agent, "last_tokens", 0)}
+    except Exception as exc:  # noqa: BLE001 — we want to catch everything
+        return {report_key: {}, "errors": [f"{report_key} failed: {exc}"]}
+
+
 def requirement_analyst_node(state: RequirementAutopsyState) -> RequirementAutopsyState:
-    return {"requirement_analyst_report": requirement_analyst.run(state["client_requirement"]).model_dump()}
+    return _run_agent("requirement_analyst_report", requirement_analyst, state)
 
 def tech_stack_advisor_node(state: RequirementAutopsyState) -> RequirementAutopsyState:
-    return {"tech_stack_advisor_report": tech_stack_advisor.run(state["client_requirement"]).model_dump()}
+    return _run_agent("tech_stack_advisor_report", tech_stack_advisor, state)
 
 def complexity_risk_node(state: RequirementAutopsyState) -> RequirementAutopsyState:
-    return {"complexity_risk_report": complexity_risk.run(state["client_requirement"]).model_dump()}
+    return _run_agent("complexity_risk_report", complexity_risk, state)
 
 def security_analyser_node(state: RequirementAutopsyState) -> RequirementAutopsyState:
-    return {"security_analyser_report": security_analyser.run(state["client_requirement"]).model_dump()}
+    return _run_agent("security_analyser_report", security_analyser, state)
 
 def nfr_detector_node(state: RequirementAutopsyState) -> RequirementAutopsyState:
-    return {"nfr_detector_report": nfr_detector.run(state["client_requirement"]).model_dump()}
+    return _run_agent("nfr_detector_report", nfr_detector, state)
 
 
 def _collect_reports(state: RequirementAutopsyState) -> dict:
@@ -64,7 +75,14 @@ def _collect_reports(state: RequirementAutopsyState) -> dict:
     }
 
 def build_blueprint_node(state: RequirementAutopsyState) -> RequirementAutopsyState:
-    return {"build_blueprint_report": build_blueprint.run(_collect_reports(state)).model_dump()}
+    try:
+        report = build_blueprint.run(_collect_reports(state)).model_dump()
+        return {"build_blueprint_report": report, "agent_tokens": getattr(build_blueprint, "last_tokens", 0)}
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "build_blueprint_report": {},
+            "errors": [f"build_blueprint failed: {exc}"],
+        }
 
 
 def build_workflow_graph():
@@ -92,11 +110,9 @@ def build_workflow_graph():
 
     workflow.add_edge("build_blueprint", END)
 
-    import os
-    os.makedirs("data", exist_ok=True)
-    conn = sqlite3.connect("data/checkpoints.db", check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
-    return workflow.compile(checkpointer=checkpointer)
+    # No checkpointer on the orchestration graph — it's a single-pass fan-out →
+    # synthesis. Each agent keeps its own checkpointer for its retry loop.
+    return workflow.compile()
 
 
 graph = build_workflow_graph()

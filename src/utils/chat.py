@@ -26,8 +26,6 @@ def _api_key() -> str:
 def _model() -> str:
     return os.getenv("OPENAI_MODEL", "o4-mini")
 
-LANGGRAPH_URL = os.getenv("LANGGRAPH_URL", "http://localhost:2024")
-
 # Pricing per 1M tokens (USD). Override in .env with your real Azure rates.
 PRICE_INPUT_PER_1M = float(os.getenv("LLM_PRICE_INPUT_PER_1M", "1.25"))
 PRICE_OUTPUT_PER_1M = float(os.getenv("LLM_PRICE_OUTPUT_PER_1M", "10.0"))
@@ -53,51 +51,37 @@ PHASE_MESSAGES = {
 
 
 async def stream_langgraph(requirement: str):
-    """Run the graph and yield (progress messages) then the final result.
+    """Run the LangGraph workflow IN-PROCESS and yield progress, then the result.
 
-    Yields dicts: {"type": "progress", "message": ...} for each phase,
+    Calls the compiled graph directly (no separate `langgraph dev` server),
+    so the whole backend is a single deployable service.
+
+    Yields dicts: {"type": "progress", "message": ...} per phase,
     and finally {"type": "analysis", "result": {...}}.
     """
-    async with httpx.AsyncClient(timeout=300) as client:
-        thread_res = await client.post(
-            f"{LANGGRAPH_URL}/threads",
-            headers={"Content-Type": "application/json"},
-            content=json.dumps({}),
-        )
-        thread_res.raise_for_status()
-        thread_id = thread_res.json()["thread_id"]
+    from langchain_core.utils.uuid import uuid7
 
-        final_state: dict = {}
+    from src.graphs.workflow import graph
 
-        async with client.stream(
-            "POST",
-            f"{LANGGRAPH_URL}/threads/{thread_id}/runs/stream",
-            headers={"Content-Type": "application/json"},
-            content=json.dumps({
-                "assistant_id": "my_agent",
-                "input": {"client_requirement": requirement},
-                "stream_mode": "updates",
-            }),
-        ) as response:
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                raw = line[5:].strip()
-                if not raw or raw == "[DONE]":
-                    continue
-                try:
-                    update = json.loads(raw)
-                except Exception:
-                    continue
-                # update is keyed by node name(s) that just finished
-                if isinstance(update, dict):
-                    for node, node_output in update.items():
-                        if node in PHASE_MESSAGES:
-                            yield {"type": "progress", "message": PHASE_MESSAGES[node]}
-                        if isinstance(node_output, dict):
-                            final_state.update(node_output)
+    final_state: dict = {}
+    agent_tokens = 0  # summed across all nodes (each node reports its own usage)
 
-        yield {"type": "analysis", "result": final_state}
+    async for update in graph.astream(
+        {"client_requirement": requirement},
+        stream_mode="updates",
+        config={"recursion_limit": 25, "configurable": {"thread_id": str(uuid7())}},
+    ):
+        # update is keyed by the node name(s) that just finished
+        if not isinstance(update, dict):
+            continue
+        for node, node_output in update.items():
+            if node in PHASE_MESSAGES:
+                yield {"type": "progress", "message": PHASE_MESSAGES[node]}
+            if isinstance(node_output, dict):
+                agent_tokens += node_output.get("agent_tokens", 0) or 0
+                final_state.update(node_output)
+
+    yield {"type": "analysis", "result": final_state, "agent_tokens": agent_tokens}
 
 
 class ChatMessage(BaseModel):
@@ -107,6 +91,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
+    user_id: int | None = None
 
 
 async def _stream_one_turn(client, messages, tool_calls, usage_acc):
@@ -129,6 +114,11 @@ async def _stream_one_turn(client, messages, tool_calls, usage_acc):
             "stream_options": {"include_usage": True},
         }),
     ) as response:
+        # Surface Azure/LLM HTTP errors instead of silently yielding nothing
+        if response.status_code >= 400:
+            body = (await response.aread()).decode("utf-8", "ignore")[:300]
+            raise RuntimeError(f"LLM request failed ({response.status_code}): {body}")
+
         async for line in response.aiter_lines():
             if not line.startswith("data: "):
                 continue
@@ -163,13 +153,28 @@ async def _stream_one_turn(client, messages, tool_calls, usage_acc):
 
 @router.post("/chat")
 async def chat(req: ChatRequest):
+    from src.utils.database import add_tokens, is_blocked
+
+    # Enforce the free-tier limit server-side (frontend limits are bypassable).
+    if req.user_id is not None:
+        blocked = is_blocked(req.user_id)
+        if blocked:
+
+            async def blocked_stream():
+                payload = {"type": "limit", **blocked}
+                yield f"data: {json.dumps(payload)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(blocked_stream(), media_type="text/event-stream")
+
     messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
     for msg in req.messages:
         messages.append({"role": msg.role, "content": msg.content})
 
     async def generate():
         usage_acc = {"prompt_tokens": 0, "completion_tokens": 0}
-        async with httpx.AsyncClient(timeout=120) as client:
+        try:
+          async with httpx.AsyncClient(timeout=120) as client:
             # Tool loop: web_search runs and continues; analyze_project is terminal.
             for _ in range(5):
                 tool_calls: dict = {}
@@ -188,6 +193,12 @@ async def chat(req: ChatRequest):
                             if event["type"] == "progress":
                                 yield f"data: {json.dumps({'type': 'progress', 'message': event['message']})}\n\n"
                             elif event["type"] == "analysis":
+                                # Fold the 5-agent + synthesis token cost into the turn total.
+                                # agent_tokens is combined in+out; split ~90/10 (analysis is
+                                # input-heavy: long prompts + search results, short structured output).
+                                at = event.get("agent_tokens", 0)
+                                usage_acc["prompt_tokens"] += int(at * 0.9)
+                                usage_acc["completion_tokens"] += at - int(at * 0.9)
                                 yield f"data: {json.dumps({'type': 'analysis', 'content': json.dumps(event['result'])})}\n\n"
                     except Exception as e:
                         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
@@ -213,15 +224,29 @@ async def chat(req: ChatRequest):
                         except Exception as e:
                             content = json.dumps([{"error": str(e)}])
                         messages.append({"role": "tool", "tool_call_id": t["id"], "content": content})
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'Chat failed: {e}'})}\n\n"
+
+        total_tokens = usage_acc["prompt_tokens"] + usage_acc["completion_tokens"]
+
+        # Record usage against the user's quota; may trigger a 7-day lock.
+        usage_info = None
+        if req.user_id is not None and total_tokens > 0:
+            usage_info = add_tokens(req.user_id, total_tokens)
 
         # Emit token usage + estimated cost for this turn
         cost_event = {
             "type": "cost",
             "prompt_tokens": usage_acc["prompt_tokens"],
             "completion_tokens": usage_acc["completion_tokens"],
-            "total_tokens": usage_acc["prompt_tokens"] + usage_acc["completion_tokens"],
+            "total_tokens": total_tokens,
             "usd": _usd(usage_acc["prompt_tokens"], usage_acc["completion_tokens"]),
         }
+        if usage_info:
+            cost_event["tokens_used"] = usage_info["tokens_used"]
+            cost_event["token_limit"] = usage_info["token_limit"]
+            cost_event["locked"] = usage_info["locked"]
+            cost_event["locked_until"] = usage_info["locked_until"]
         yield f"data: {json.dumps(cost_event)}\n\n"
 
         yield "data: [DONE]\n\n"

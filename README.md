@@ -18,6 +18,11 @@ Sentinel AI attacks the most expensive failure mode in software teams: when a ne
 
 ## 🏗️ Architecture Overview
 
+![Sentinel AI architecture](architecture_diagram/architecture.png)
+
+<details>
+<summary>Text version of the architecture</summary>
+
 ```
                 ┌──────────────────────────────────────────────────┐
   User brief →  │  React UI (chat)  ──►  FastAPI — single service   │
@@ -40,6 +45,8 @@ Sentinel AI attacks the most expensive failure mode in software teams: when a ne
                 (5 agents run in parallel, each with web_search)
                 └──────────────────────────────────────────────────┘
 ```
+
+</details>
 
 - **Single deployable backend.** The LangGraph workflow runs **in-process** inside FastAPI (`graph.astream`) — no separate `langgraph dev` server is needed to run the app.
 - **5 parallel analysis agents** each answer one question (what to build, what to use + cost, what's hard / risky, security, performance & scale). They run concurrently via LangGraph fan-out.

@@ -1,12 +1,15 @@
 """Auth + usage/upgrade endpoints."""
 
 import sqlite3
+import uuid
 
 import bcrypt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 
 from src.utils.database import get_db, now_iso, get_usage, upgrade_to_pro
+from src.utils.jwt_auth import create_token, current_user_id
+from fastapi import Depends
 
 router = APIRouter(prefix="/auth")
 
@@ -45,13 +48,13 @@ def signup(req: SignupRequest):
         raise HTTPException(status_code=400, detail=pw_error)
 
     hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
+    user_id = uuid.uuid4().hex  # unguessable id instead of a sequential integer
     try:
         with get_db() as db:
-            cursor = db.execute(
-                "INSERT INTO users (name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
-                (req.name, req.email, hashed, now_iso()),
+            db.execute(
+                "INSERT INTO users (id, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, req.name, req.email, hashed, now_iso()),
             )
-            user_id = cursor.lastrowid
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="Email already registered")
 
@@ -66,19 +69,20 @@ def login(req: LoginRequest):
     if not row or not bcrypt.checkpw(req.password.encode(), row["password_hash"].encode()):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    return {"user": get_usage(row["id"])}
+    token = create_token(row["id"])
+    return {"user": get_usage(row["id"]), "token": token}
 
 
-@router.get("/usage/{user_id}")
-def usage(user_id: int):
+@router.get("/usage")
+def usage(user_id: str = Depends(current_user_id)):
     info = get_usage(user_id)
     if not info:
         raise HTTPException(status_code=404, detail="User not found")
     return {"user": info}
 
 
-@router.post("/upgrade/{user_id}")
-def upgrade(user_id: int):
+@router.post("/upgrade")
+def upgrade(user_id: str = Depends(current_user_id)):
     info = upgrade_to_pro(user_id)
     if not info:
         raise HTTPException(status_code=404, detail="User not found")

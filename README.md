@@ -19,29 +19,33 @@ Sentinel AI attacks the most expensive failure mode in software teams: when a ne
 ## 🏗️ Architecture Overview
 
 ```
-                ┌─────────────────────────────────────────────┐
-  User brief →  │  React UI (chat)  ──►  FastAPI (port 8001)   │
-  PDF/img/doc   │   - auth (signup/login)                      │
-                │   - /api/extract  (PDF/DOCX/TXT + image OCR) │
-                │   - /api/chat     (LLM proxy, streaming)     │
-                └───────────────┬─────────────────────────────┘
-                                │ when a project brief is detected
-                                ▼
-                ┌─────────────────────────────────────────────┐
-                │   LangGraph workflow (port 2024)             │
-                │                                              │
-   START ──┬──► Requirement Analyst ──┐                        │
-           ├──► Tech Stack Advisor  ──┤                        │
+                ┌──────────────────────────────────────────────────┐
+  User brief →  │  React UI (chat)  ──►  FastAPI — single service   │
+  PDF/img/doc   │                        (port 8001)                │
+                │   - /auth         signup/login (bcrypt + JWT)     │
+                │   - /api/extract  PDF / DOCX / TXT + image OCR    │
+                │   - /api/chat     guardrailed LLM proxy (stream)  │
+                │   - /api/sessions server-side chat history        │
+                └───────────────────────┬──────────────────────────┘
+                                         │ brief detected → runs IN-PROCESS
+                                         ▼
+                ┌──────────────────────────────────────────────────┐
+                │   LangGraph workflow (in-process, no extra server) │
+                │                                                    │
+   START ──┬──► Requirement Analyst ──┐                              │
+           ├──► Tech Stack Advisor  ──┤                              │
            ├──► Complexity & Risk   ──┼──► Build Blueprint ──► END
-           ├──► Security Analyser   ──┤    (synthesis agent)   │
-           └──► NFR Detector        ──┘                        │
+           ├──► Security Analyser   ──┤    (synthesis agent)         │
+           └──► NFR Detector        ──┘                              │
                 (5 agents run in parallel, each with web_search)
-                └─────────────────────────────────────────────┘
+                └──────────────────────────────────────────────────┘
 ```
 
+- **Single deployable backend.** The LangGraph workflow runs **in-process** inside FastAPI (`graph.astream`) — no separate `langgraph dev` server is needed to run the app.
 - **5 parallel analysis agents** each answer one question (what to build, what to use + cost, what's hard / risky, security, performance & scale). They run concurrently via LangGraph fan-out.
 - **1 synthesis agent** (`build_blueprint`) reads all 5 reports, resolves cross-agent conflicts, verifies facts via web search, and produces the final guide.
-- Every agent is a **LangChain `create_agent`** with **structured (Pydantic) output**, **model + tool retry middleware**, and a **SQLite checkpointer** for resilient runs.
+- Every agent is a **LangChain `create_agent`** with **structured (Pydantic) output**, **model + tool retry middleware**, and an **in-memory checkpointer** for resilient retry loops.
+- **Graceful degradation:** each agent is wrapped so one failure never crashes the run — the remaining agents still produce a guide, with errors recorded.
 
 ### Anti-hallucination & no vendor bias
 Agents must commit to concrete recommendations with stated assumptions (never "TBD"), verify prices/versions with live web search rather than memory, and treat AWS/Azure/GCP and OpenAI/Anthropic/Gemini/open-source as equally valid — preferring the team's existing ecosystem.
@@ -54,15 +58,16 @@ Agents must commit to concrete recommendations with stated assumptions (never "T
 |---|---|
 | **LLM** | `gpt-5.2` via **Azure AI Foundry** (OpenAI-compatible endpoint), incl. vision for image OCR |
 | **Agent framework** | **LangChain** `create_agent` + `ModelRetryMiddleware`, `ToolRetryMiddleware` |
-| **Orchestration** | **LangGraph** (parallel fan-out → synthesis), `SqliteSaver` checkpointer |
+| **Orchestration** | **LangGraph** (in-process parallel fan-out → synthesis), in-memory checkpointer |
 | **Web research tool** | **Tavily** search API (`web_search` tool) |
 | **Observability** | **LangSmith** tracing |
-| **Backend** | **FastAPI** + Uvicorn (auth, chat proxy, document/image extraction) |
-| **Auth & storage** | **SQLite** + **bcrypt** password hashing |
+| **Backend** | **FastAPI** + Uvicorn — single service (auth, chat proxy, extraction, sessions, workflow) |
+| **Auth** | **JWT** (PyJWT) signed tokens + **bcrypt** password hashing + password-strength policy |
+| **Storage** | **SQLite** — users, server-side chat sessions, usage limits |
 | **Doc extraction** | `pypdf` (PDF), `python-docx` (Word), vision LLM (images) |
 | **Frontend** | **React 19 + Vite + TypeScript + Tailwind CSS** |
 | **Export** | `docx` (Word build-guide export) |
-| **Testing** | `pytest` + `pytest-asyncio` (19 tests, mocked LLM) |
+| **Testing** | `pytest` + `pytest-asyncio` (20 tests, mocked LLM) |
 
 ---
 
@@ -70,20 +75,20 @@ Agents must commit to concrete recommendations with stated assumptions (never "T
 
 ```
 Hackthon/
-├── Sentinel-AI-/                 # Backend
-│   ├── auth_server.py            # FastAPI entry (port 8001)
-│   ├── langgraph.json            # LangGraph graph config (port 2024)
-│   ├── start.sh                  # runs auth_server + langgraph dev together
+├── Sentinel-AI-/                 # Backend (single FastAPI service)
+│   ├── auth_server.py            # FastAPI entry — port 8001
+│   ├── langgraph.json            # LangGraph config (optional Studio view only)
+│   ├── start.sh                  # runs the backend (python auth_server.py)
 │   ├── requirements.txt
-│   ├── data/                     # SQLite DBs (users, agent checkpoints)
-│   ├── test/                     # 19 pytest tests
+│   ├── data/                     # SQLite DB (users, sessions, usage)
+│   ├── test/                     # 20 pytest tests
 │   └── src/
 │       ├── agents/               # 5 analysis agents + build_blueprint
 │       ├── prompts/              # one prompt per agent + shared grounding
 │       ├── graphs/workflow.py    # LangGraph fan-out → synthesis
 │       ├── models/state.py       # shared graph state
 │       ├── tools/web_search.py   # Tavily tool
-│       └── utils/                # auth, chat, extract, database endpoints
+│       └── utils/                # auth, chat, extract, sessions, database, jwt_auth
 └── Sentinel_frontend/            # Frontend (React + Vite)
     └── src/
         ├── components/           # AuthPage, Sidebar, ChatMessage, AnalysisReport…
@@ -111,6 +116,7 @@ azure_endpoint="https://<your-resource>.services.ai.azure.com/openai/v1"
 FOUNDRY_API_KEY="<your-azure-foundry-key>"
 OPENAI_MODEL="gpt-5.2"
 TAVILY_API_KEY="<your-tavily-key>"
+JWT_SECRET="<any-long-random-string>"
 LANGCHAIN_API_KEY="<optional-langsmith-key>"
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_PROJECT="Sentinel AI"
@@ -127,17 +133,19 @@ No secrets live in the frontend — all API keys stay server-side.
 
 ## ▶️ Running the App
 
-Open **three terminals** (or use `start.sh` for the two backend services):
+Just **two terminals** — the LangGraph workflow runs inside the backend, so there's no separate server to start:
 
 ```bash
-# Terminal 1 + 2 — backend (LangGraph on :2024, FastAPI on :8001)
-cd Sentinel-AI- && source venv/bin/activate && ./start.sh
+# Terminal 1 — backend (FastAPI on :8001)
+cd Sentinel-AI- && source venv/bin/activate && python auth_server.py
 
-# Terminal 3 — frontend (Vite on :5173)
+# Terminal 2 — frontend (Vite on :5173)
 cd Sentinel_frontend && npm run dev
 ```
 
-Then open **http://localhost:5173**, create an account, and paste/upload a project brief.
+Then open **http://localhost:5173**, create an account, sign in, and paste/upload a project brief.
+
+> Optional: to inspect the agent graph visually in LangGraph Studio, run `langgraph dev` separately — the app does not require it.
 
 ---
 
@@ -146,7 +154,7 @@ Then open **http://localhost:5173**, create an account, and paste/upload a proje
 ```bash
 cd Sentinel-AI- && source venv/bin/activate && pytest test/ -v
 ```
-19 tests cover the agents, the full LangGraph orchestration, the auth + chat API, the database layer, and the web-search tool. The LLM is mocked, so tests run in ~2s with no API cost.
+20 tests cover the agents, the full LangGraph orchestration, the auth + chat API (incl. JWT-protected routes), the database layer, and the web-search tool. The LLM is mocked, so tests run in ~2s with no API cost.
 
 ---
 
@@ -158,8 +166,9 @@ cd Sentinel-AI- && source venv/bin/activate && pytest test/ -v
 - 🧠 **Expert implementation techniques** — frameworks, patterns, libraries, not just tool names
 - 💬 **Follow-up Q&A** grounded in the report + live web search
 - 📥 **Word (.docx) export** of the full build guide
-- 🔢 **Live token-cost tracking** per session
-- 🔐 **Auth** (bcrypt) + persisted chat sessions
+- 🔢 **Live token-cost tracking** + server-side **usage limits**
+- 🔐 **JWT auth** + bcrypt + password-strength policy; **server-side chat history** scoped per user
+- 🛡️ **Guardrails** — scope control (rejects off-topic / injection), anti-hallucination & vendor-neutral policies
 
 ---
 
@@ -173,4 +182,4 @@ cd Sentinel-AI- && source venv/bin/activate && pytest test/ -v
 
 ---
 
-*Built for Microsfot Hackathon· Powered by Azure AI Foundry, LangGraph & LangChain.*
+*Built for the Microsoft Hackathon · Powered by Azure AI Foundry, LangGraph & LangChain.*

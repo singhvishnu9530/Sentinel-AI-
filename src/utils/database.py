@@ -8,7 +8,7 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "users.db"
 
 # Free-tier limits
-FREE_TOKEN_LIMIT = 10_000          # tokens before a free user is blocked
+FREE_TOKEN_LIMIT = 1_000_000       # tokens before a free user is blocked
 LOCK_DAYS = 7                      # how long the lock lasts if they don't upgrade
 
 
@@ -27,7 +27,7 @@ def init_db() -> None:
     with get_db() as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
@@ -47,6 +47,18 @@ def init_db() -> None:
             if col not in cols:
                 db.execute(ddl)
 
+        # Chat sessions — one row per analysis conversation, scoped to a user.
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                messages TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -54,7 +66,7 @@ def now_iso() -> str:
 
 # ── Usage / limit helpers ─────────────────────────────────────────────────────
 
-def get_usage(user_id: int) -> dict | None:
+def get_usage(user_id: str) -> dict | None:
     """Return the user's plan, token usage, and lock status."""
     with get_db() as db:
         row = db.execute(
@@ -84,7 +96,7 @@ def get_usage(user_id: int) -> dict | None:
     }
 
 
-def is_blocked(user_id: int) -> dict | None:
+def is_blocked(user_id: str) -> dict | None:
     """If the user may NOT use the service, return their usage info; else None."""
     usage = get_usage(user_id)
     if usage and usage["locked"]:
@@ -92,7 +104,7 @@ def is_blocked(user_id: int) -> dict | None:
     return None
 
 
-def add_tokens(user_id: int, tokens: int) -> dict | None:
+def add_tokens(user_id: str, tokens: int) -> dict | None:
     """Add token usage. If a free user crosses the limit, lock them for LOCK_DAYS."""
     with get_db() as db:
         row = db.execute(
@@ -116,10 +128,63 @@ def add_tokens(user_id: int, tokens: int) -> dict | None:
     return get_usage(user_id)
 
 
-def upgrade_to_pro(user_id: int) -> dict | None:
+def upgrade_to_pro(user_id: str) -> dict | None:
     """Mock upgrade — flip to Pro, clear the lock, lift the limit."""
     with get_db() as db:
         db.execute(
             "UPDATE users SET plan = 'pro', locked_until = NULL WHERE id = ?", (user_id,)
         )
     return get_usage(user_id)
+
+
+# ── Chat session persistence ──────────────────────────────────────────────────
+
+import json as _json
+
+
+def list_sessions(user_id: str) -> list[dict]:
+    """All sessions for a user, newest first. `messages` is parsed back to a list."""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id, title, messages, updated_at FROM sessions "
+            "WHERE user_id = ? ORDER BY updated_at DESC",
+            (user_id,),
+        ).fetchall()
+    sessions = []
+    for r in rows:
+        try:
+            messages = _json.loads(r["messages"])
+        except Exception:
+            messages = []
+        sessions.append({
+            "id": r["id"],
+            "title": r["title"],
+            "messages": messages,
+            "updatedAt": r["updated_at"],
+        })
+    return sessions
+
+
+def upsert_session(user_id: str, session_id: str, title: str, messages: list, updated_at: str) -> None:
+    """Insert or update one session (scoped to the user)."""
+    with get_db() as db:
+        db.execute(
+            """
+            INSERT INTO sessions (id, user_id, title, messages, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                messages = excluded.messages,
+                updated_at = excluded.updated_at
+            WHERE sessions.user_id = ?
+            """,
+            (session_id, user_id, title, _json.dumps(messages), updated_at, user_id),
+        )
+
+
+def delete_session(user_id: str, session_id: str) -> None:
+    """Delete a session, but only if it belongs to this user."""
+    with get_db() as db:
+        db.execute(
+            "DELETE FROM sessions WHERE id = ? AND user_id = ?", (session_id, user_id)
+        )

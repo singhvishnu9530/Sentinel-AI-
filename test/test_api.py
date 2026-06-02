@@ -165,27 +165,40 @@ def test_login_nonexistent_user(client):
 # CHAT ENDPOINT TESTS (MOCKED)
 # ==========================================
 
+def _auth_token(client) -> str:
+    """Sign up + log in, return the JWT for authenticated requests."""
+    client.post("/auth/signup", json={
+        "name": "Chat User", "email": "chat@example.com", "password": "Password123!",
+    })
+    res = client.post("/auth/login", json={
+        "email": "chat@example.com", "password": "Password123!",
+    })
+    return res.json()["token"]
+
+
 @patch("src.utils.chat._stream_one_turn")
 def test_chat_simple_text_response(mock_stream_turn, client):
     """Test chat API returns standard LLM chat streaming outputs using mock streams."""
-    # Mocking standard azure stream turn generator yielding a completion chunk
     async def mock_stream(*args, **kwargs):
-        # mock stream yielded values
         yield "data: {\"choices\": [{\"delta\": {\"content\": \"Hello! How can I help you?\"}}]}\n\n"
 
     mock_stream_turn.side_effect = mock_stream
 
+    token = _auth_token(client)
     response = client.post(
         "/api/chat",
-        json={
-            "messages": [
-                {"role": "user", "content": "Hello"}
-            ]
-        }
+        json={"messages": [{"role": "user", "content": "Hello"}]},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == status.HTTP_200_OK
     assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
-    
-    # Check streamed response payload contains the mock content
-    stream_content = response.text
-    assert "Hello! How can I help you?" in stream_content
+    assert "Hello! How can I help you?" in response.text
+
+
+def test_chat_requires_auth(client):
+    """Chat without a token is rejected."""
+    response = client.post(
+        "/api/chat",
+        json={"messages": [{"role": "user", "content": "Hello"}]},
+    )
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED

@@ -5,12 +5,13 @@ import os
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.prompts.chat_agent import ANALYZE_TOOL, CHAT_SYSTEM_PROMPT, WEB_SEARCH_TOOL
 from src.tools.web_search import web_search
+from src.utils.jwt_auth import current_user_id
 
 load_dotenv()
 
@@ -91,7 +92,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
-    user_id: int | None = None
+    # user_id is taken from the verified JWT, NOT from the request body.
 
 
 async def _stream_one_turn(client, messages, tool_calls, usage_acc):
@@ -152,20 +153,19 @@ async def _stream_one_turn(client, messages, tool_calls, usage_acc):
 
 
 @router.post("/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, user_id: str = Depends(current_user_id)):
     from src.utils.database import add_tokens, is_blocked
 
     # Enforce the free-tier limit server-side (frontend limits are bypassable).
-    if req.user_id is not None:
-        blocked = is_blocked(req.user_id)
-        if blocked:
+    blocked = is_blocked(user_id)
+    if blocked:
 
-            async def blocked_stream():
-                payload = {"type": "limit", **blocked}
-                yield f"data: {json.dumps(payload)}\n\n"
-                yield "data: [DONE]\n\n"
+        async def blocked_stream():
+            payload = {"type": "limit", **blocked}
+            yield f"data: {json.dumps(payload)}\n\n"
+            yield "data: [DONE]\n\n"
 
-            return StreamingResponse(blocked_stream(), media_type="text/event-stream")
+        return StreamingResponse(blocked_stream(), media_type="text/event-stream")
 
     messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
     for msg in req.messages:
@@ -231,8 +231,8 @@ async def chat(req: ChatRequest):
 
         # Record usage against the user's quota; may trigger a 7-day lock.
         usage_info = None
-        if req.user_id is not None and total_tokens > 0:
-            usage_info = add_tokens(req.user_id, total_tokens)
+        if total_tokens > 0:
+            usage_info = add_tokens(user_id, total_tokens)
 
         # Emit token usage + estimated cost for this turn
         cost_event = {

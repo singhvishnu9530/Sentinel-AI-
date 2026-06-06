@@ -25,7 +25,7 @@ from src.agents.tech_stack_advisor import TechStackAdvisorReport, StackRecommend
 from src.agents.complexity_risk import ComplexityRiskReport, RiskItem
 from src.agents.security_analyser import SecurityAnalyserReport
 from src.agents.nfr_detector import NFRDetectorReport
-from src.agents.build_blueprint import BuildBlueprint, BudgetTier, BlueprintLayer, Alternative, TechniqueNote, ToolService, BuildPhase, KeyRisk
+from src.agents.build_blueprint import BuildBlueprint, BudgetTier, BlueprintLayer, Alternative, TechniqueNote, ToolService, BuildPhase, KeyRisk, DeploymentGroup, Overview
 
 
 def test_workflow_orchestration():
@@ -90,13 +90,13 @@ def test_workflow_orchestration():
     blueprint_report = BuildBlueprint(
         project_type="Test Project",
         problem_statement="Problem statement",
-        overview="Overview summary",
+        overview=Overview(what_it_is="A test product.", how_it_works="It does the thing.", why_this_approach="Because it fits."),
         budget_tiers=[BudgetTier(name="Lean", monthly_cost="$10/mo", summary="Lean option", best_for="Testing")],
         stack=[BlueprintLayer(layer="Database", choice="PostgreSQL", why="Relational needs", alternatives=[Alternative(name="MySQL", cost="Free", tradeoff="None")], cost="Free", basis="Brief")],
         implementation_techniques=[TechniqueNote(area="DB", recommendation="Indexing", details="Add indexes")],
         tools_and_services=[ToolService(name="AWS", purpose="Hosting", cost="Paid")],
         build_order=[BuildPhase(phase="Step 1", goal="DB", tasks=["Setup DB"])],
-        deployment="AWS deploy",
+        deployment=[DeploymentGroup(area="Architecture", points=["AWS ECS Fargate for API + worker"])],
         estimated_monthly_cost="$10/mo",
         cost_breakdown=["DB: $10/mo"],
         decisions_to_make=["Decisions"],

@@ -1,4 +1,6 @@
-"""Backend entry point — runs on port 8001."""
+"""Backend entry point — runs on port 8001 (or $PORT in a container)."""
+
+import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -14,9 +16,16 @@ load_dotenv()
 
 app = FastAPI(title="Sentinel AI Backend")
 
+# Allowed origins: always localhost for dev, plus any deployed frontend URLs
+# passed via ALLOWED_ORIGINS (comma-separated) in production.
+_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_extra = os.getenv("ALLOWED_ORIGINS", "")
+if _extra:
+    _origins += [o.strip() for o in _extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -9,7 +9,7 @@ from langchain_core.utils.uuid import uuid7
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from langchain.agents import create_agent
 from langchain.agents.middleware.model_retry import ModelRetryMiddleware
 from langchain.agents.middleware.tool_retry import ToolRetryMiddleware
@@ -67,17 +67,28 @@ class KeyRisk(BaseModel):
     mitigation: str
 
 
+class DeploymentGroup(BaseModel):
+    area: str                # "Architecture", "Networking & Security", "Compute & Scaling", "CI/CD", "Observability"
+    points: list[str]        # 2-5 concrete lines for this area
+
+
+class Overview(BaseModel):
+    what_it_is: str          # 1-2 sentences: what the product is, in plain language
+    how_it_works: str        # 2-3 sentences: the flow — input → processing → output
+    why_this_approach: str   # 1-2 sentences: what makes this approach sound / the right call
+
+
 class BuildBlueprint(BaseModel):
     # ── Document flow: read top to bottom ──
     project_type: str                       # "AI Chatbot", "HIPAA Patient Portal"
     problem_statement: str                  # 1. what we're building & the problem it solves (plain language)
-    overview: str                           # 2. the solution in a nutshell — how it works at a high level
+    overview: Overview                      # 2. the solution explained — what it is, how it works, why this approach
     budget_tiers: list[BudgetTier]          # 3. pick-a-budget: Lean / Balanced / Scale bundles
     stack: list[BlueprintLayer]             # 4. recommended technology with priced alternatives to choose from
     implementation_techniques: list[TechniqueNote]  # 5. expert middle-layer techniques/patterns for THIS project
     tools_and_services: list[ToolService]   # 6. accounts/tools/services to set up
     build_order: list[BuildPhase]           # 6. how to build it, step by step
-    deployment: str                         # 7. where & how to host it, explained (paragraph)
+    deployment: list[DeploymentGroup]       # 7. how to deploy it — grouped by area, each with concrete points
     estimated_monthly_cost: str             # 8. monthly cost range with assumption
     cost_breakdown: list[str]               # 8b. per-component cost lines
     decisions_to_make: list[str]            # 9. choices that would change the plan

@@ -11,7 +11,7 @@ from src.agents.tech_stack_advisor import TechStackAdvisorAgent, TechStackAdviso
 from src.agents.complexity_risk import ComplexityRiskAgent, ComplexityRiskReport, RiskItem
 from src.agents.security_analyser import SecurityAnalyserAgent, SecurityAnalyserReport
 from src.agents.nfr_detector import NFRDetectorAgent, NFRDetectorReport
-from src.agents.build_blueprint import BuildBlueprintAgent, BuildBlueprint, Alternative, BlueprintLayer, BudgetTier, TechniqueNote, ToolService, BuildPhase, KeyRisk
+from src.agents.build_blueprint import BuildBlueprintAgent, BuildBlueprint, Alternative, BlueprintLayer, BudgetTier, TechniqueNote, ToolService, BuildPhase, KeyRisk, DeploymentGroup, Overview
 
 
 @patch("src.agents.requirement_analyst.create_agent")
@@ -165,13 +165,13 @@ def test_build_blueprint_agent(mock_create_agent):
     expected_report = BuildBlueprint(
         project_type="AI Task Manager",
         problem_statement="Team coordination is slow and manual.",
-        overview="Sentinel AI automatically manages boards and schedules.",
+        overview=Overview(what_it_is="A task manager.", how_it_works="Users create and track tasks.", why_this_approach="Simple and fast to ship."),
         budget_tiers=[BudgetTier(name="Lean", monthly_cost="$5/mo", summary="Free frontend hosting + Supabase free tier", best_for="MVP validation")],
         stack=[BlueprintLayer(layer="Frontend", choice="Next.js", why="SEO and SSR", alternatives=[Alternative(name="Vite React", cost="Free", tradeoff="No SSR")], cost="Free", basis="Assumption")],
         implementation_techniques=[TechniqueNote(area="State Management", recommendation="Zustand", details="Lightweight global store")],
         tools_and_services=[ToolService(name="OpenAI API", purpose="Smart task categorization", cost="Usage-based (~$10/mo)")],
         build_order=[BuildPhase(phase="Step 1", goal="Database setup", tasks=["Design PostgreSQL schemas", "Configure indexes"])],
-        deployment="Vercel for frontend, Supabase for backend database",
+        deployment=[DeploymentGroup(area="Architecture", points=["Vercel for frontend", "Supabase for backend"])],
         estimated_monthly_cost="~$15/mo",
         cost_breakdown=["Supabase db: $10/mo", "OpenAI usage: $5/mo"],
         decisions_to_make=["Decide if real-time WebSockets are required or long-polling is sufficient"],

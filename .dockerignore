@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.py[cod]
+.env
+data/
+.langgraph_api/
+.git/
+.DS_Store
+test/
+*.md
+images/
+architecture_diagram/

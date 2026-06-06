@@ -136,13 +136,16 @@ Sum component costs from tech_stack_advisor (verified/updated in Step 2) into a 
 ## Output rules
 - project_type: 2–4 word label
 - problem_statement: plain language, what & why, 2-3 sentences
-- overview: how the solution works at a high level, 2-4 sentences
+- overview: an object with three parts, each clear, flowing prose (not run-on, not a checklist):
+    - what_it_is: 1-2 sentences — what the product is, in plain language a non-specialist gets
+    - how_it_works: 2-3 sentences — the flow from input → processing → output, one idea per sentence
+    - why_this_approach: 1-2 sentences — what makes this approach sound / the right call for this project
 - budget_tiers: exactly 3 (Lean / Balanced / Scale), each with name, monthly_cost, summary, best_for
 - stack: one entry per layer; alternatives must each have name + cost + tradeoff and be cross-vendor; cost never "TBD"
 - implementation_techniques: 4-8 expert techniques/patterns/libraries specific to THIS project's domain, each with area + recommendation + concrete details
 - tools_and_services: accounts/services to set up, each with purpose + cost
 - build_order: 3–5 steps, Step 1 is always a working vertical slice with real data
-- deployment: one short paragraph, vendor-neutral unless the brief implies one
+- deployment: a structured plan grouped into 4-6 areas. Use these areas where relevant: "Architecture" (the services/containers and how they fit), "Networking & Security" (subnets, ingress/egress, TLS), "Compute & Scaling" (where it runs, sizing, autoscaling), "Data Layer" (DB/storage deployment specifics), "CI/CD" (build → deploy → migrations), "Observability" (logs, metrics, alerts). Each area = 2-5 concrete, specific points. Prefer the team's existing cloud if implied; otherwise pick one sensible default and name the equivalent services. Be concrete (real services, real sizing) — this is the production deployment plan, so depth here is expected.
 - estimated_monthly_cost: range with scale assumption stated
 - cost_breakdown: per-component line items with amounts
 - decisions_to_make: choices that would change the plan, phrased simply

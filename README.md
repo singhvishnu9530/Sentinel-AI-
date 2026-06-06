@@ -165,6 +165,96 @@ cd Sentinel-AI- && source venv/bin/activate && pytest test/ -v
 
 ---
 
+## ☁️ Deployment (Azure)
+
+Both services are containerised and deployed to **Azure Container Apps** — a serverless container platform that **scales to zero** when idle, so you only pay while requests are being served (ideal for a demo / hackathon budget).
+
+### Architecture
+```
+                    ┌─────────────────────────────┐
+   Browser  ──────► │  Frontend Container App      │   (nginx serving the Vite build)
+                    │  sentinel-frontend           │
+                    └──────────────┬──────────────┘
+                                   │  HTTPS  (VITE_API_URL)
+                                   ▼
+                    ┌─────────────────────────────┐
+                    │  Backend Container App        │   (FastAPI + LangGraph, :8001)
+                    │  sentinel-backend            │   secrets injected as env vars
+                    └──────────────┬──────────────┘
+                                   │
+                          Azure AI Foundry (gpt-5.2) · Tavily
+```
+
+| Component | Image | Hosting |
+|---|---|---|
+| **Backend** | `python:3.12-slim` → FastAPI on `:8001` | Azure Container App (scale-to-zero) |
+| **Frontend** | `node:20` build → **nginx** static serve on `:80` | Azure Container App |
+| **Registry** | both images | Azure Container Registry (auto-created) |
+
+> 🔐 **No secrets are baked into the images.** The backend `.env` is excluded via `.dockerignore`; all keys (Foundry, Tavily, JWT, LangChain) are injected at runtime as Azure Container App environment variables. The frontend image contains only the **public backend URL** (`VITE_API_URL`).
+
+### Prerequisites
+- **Azure CLI** logged in (`az login`)
+- A **resource group** and an **Azure AI Foundry** `gpt-5.2` deployment
+- One-time provider registration:
+  ```bash
+  az provider register -n Microsoft.App --wait
+  az provider register -n Microsoft.OperationalInsights --wait
+  az provider register -n Microsoft.ContainerRegistry --wait
+  ```
+
+### 1. Deploy the backend
+```bash
+cd Sentinel-AI-
+az containerapp up \
+  --name sentinel-backend \
+  --resource-group <your-rg> \
+  --source . \
+  --ingress external --target-port 8001 \
+  --env-vars \
+    azure_endpoint="https://<resource>.services.ai.azure.com/openai/v1" \
+    FOUNDRY_API_KEY="<key>" \
+    OPENAI_MODEL="gpt-5.2" \
+    TAVILY_API_KEY="<key>" \
+    JWT_SECRET="<long-random-string>" \
+    LANGCHAIN_TRACING_V2=false \
+    ALLOWED_ORIGINS="https://<your-frontend-url>"
+```
+Copy the backend URL it prints (e.g. `https://sentinel-backend.<region>.azurecontainerapps.io`).
+
+### 2. Deploy the frontend
+Set the backend URL in `Sentinel_frontend/.env.production` (Vite reads `VITE_*` at build time):
+```env
+VITE_API_URL=https://sentinel-backend.<region>.azurecontainerapps.io
+```
+Then build & deploy:
+```bash
+cd Sentinel_frontend
+az containerapp up \
+  --name sentinel-frontend \
+  --resource-group <your-rg> \
+  --source . \
+  --ingress external --target-port 80
+```
+
+### 3. Wire CORS
+Update the backend's `ALLOWED_ORIGINS` env var to the deployed frontend URL so browser requests are accepted:
+```bash
+az containerapp update \
+  --name sentinel-backend --resource-group <your-rg> \
+  --set-env-vars ALLOWED_ORIGINS="https://sentinel-frontend.<region>.azurecontainerapps.io"
+```
+
+### Cost & cold-start notes
+- **Scale-to-zero** keeps idle cost near $0; you mostly pay for Azure AI Foundry token usage.
+- First request after idle has a **cold-start delay** (a few seconds). For live judging, pin one warm instance:
+  ```bash
+  az containerapp update --name sentinel-backend --resource-group <your-rg> --min-replicas 1
+  ```
+- **Storage note:** the container uses **SQLite on the container filesystem**, which is *ephemeral* — users/sessions reset when the container restarts. For persistent data, migrate to **Azure Database for PostgreSQL** and point `database.py` at it.
+
+---
+
 ## 🚀 Key Features
 
 - 📄 **Multi-format input** — type, paste, or upload PDF / Word / text / **image (vision OCR)**
@@ -185,6 +275,17 @@ cd Sentinel-AI- && source venv/bin/activate && pytest test/ -v
 | Name | Role | Responsibilities |
 |---|---|---|
 | Vishnu Singh | Senior Machine Learning Engineer | Agent design, LangGraph workflow, backend & frontend |
+
+---
+
+## 🤖 Use of AI Tools
+
+In line with the hackathon guidelines, the following AI-powered tools were used during development of this project:
+
+- **GitHub Copilot** — in-editor code completion and boilerplate suggestions.
+- **AI coding assistants (LLM-based)** — used for scaffolding modules, refactoring, writing tests, and drafting documentation.
+
+These tools accelerated routine work, but the **architecture, product decisions, agent design, and engineering judgment are our own.** Every AI-generated suggestion was reviewed, tested, and adapted to fit the system. Key human-led decisions include: the multi-agent build-guide approach (over a simple readiness score), the prompt engineering and vendor-neutral / anti-hallucination grounding strategy, the parallel LangGraph fan-out → synthesis orchestration, the server-side security model (JWT + bcrypt, all LLM keys server-side only), the token-cost tracking and usage limits, and the budget-tier output design. AI-generated boilerplate alone was never treated as a finished solution.
 
 ---
 
